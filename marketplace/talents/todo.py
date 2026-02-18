@@ -67,6 +67,15 @@ class TodoTalent(BaseTalent):
     def execute(self, command: str, context: dict) -> dict:
         cmd = command.lower().strip()
 
+        # Natural phrasing: "add X to my todo list" / "put X on my list"
+        # Must be checked BEFORE the list-tasks branch (which matches "todo list")
+        add_match = re.match(
+            r'(?:add|put)\s+(.+?)\s+(?:to|on)\s+(?:my\s+)?(?:todo|to-do|to do|task)?\s*list',
+            cmd
+        )
+        if add_match:
+            return self._add_task_direct(add_match.group(1).strip())
+
         # List tasks
         if any(p in cmd for p in ["show", "list", "my task", "my todo", "my to-do",
                                    "what are my", "todo list", "to do list"]):
@@ -89,7 +98,7 @@ class TodoTalent(BaseTalent):
                                                    "remove", "delete"])
             return self._remove_task(query)
 
-        # Add task (default)
+        # Add task (prefix-based)
         if any(p in cmd for p in ["add task", "add a task", "new task", "create task",
                                    "add to my", "add to todo", "add to list"]):
             return self._add_task(cmd, context)
@@ -139,6 +148,60 @@ class TodoTalent(BaseTalent):
 
         # Clean up trailing/leading noise
         text = re.sub(r'^(to|that)\s+', '', text).strip()
+        if not text:
+            return self._fail("I couldn't figure out the task description.")
+
+        task = {
+            "id": int(datetime.now().timestamp() * 1000),
+            "text": text,
+            "priority": priority,
+            "tag": tag,
+            "due": due,
+            "completed": False,
+            "created": datetime.now().isoformat(),
+        }
+        self._tasks.append(task)
+        self._save()
+
+        parts = [f"Added task: \"{text}\""]
+        if priority != "medium":
+            parts.append(f"Priority: {priority}")
+        if tag:
+            parts.append(f"Tag: {tag}")
+        if due:
+            parts.append(f"Due: {due}")
+
+        return {
+            "success": True,
+            "response": " | ".join(parts),
+            "actions_taken": [{"action": "todo_add", "text": text}],
+            "spoken": False,
+        }
+
+    def _add_task_direct(self, text):
+        """Add a task where the description text has already been extracted."""
+        if not text:
+            return self._fail("What task would you like to add?")
+
+        priority = self._config.get("default_priority", "medium")
+        for p in ["high", "medium", "low"]:
+            if f"{p} priority" in text:
+                priority = p
+                text = text.replace(f"{p} priority", "").strip()
+                break
+
+        tag = None
+        tag_match = re.search(r'(?:tag(?:ged)?|category|label)\s+(\w+)', text)
+        if tag_match:
+            tag = tag_match.group(1)
+            text = text[:tag_match.start()].strip()
+
+        due = None
+        due_match = re.search(r'\bby\s+(\w+)', text)
+        if due_match:
+            due = due_match.group(1)
+            text = text[:due_match.start()].strip()
+
         if not text:
             return self._fail("I couldn't figure out the task description.")
 
