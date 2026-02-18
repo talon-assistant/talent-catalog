@@ -33,6 +33,12 @@ class TodoTalent(BaseTalent):
         "check off", "complete task", "remove task", "show tasks",
         "my tasks", "my list", "todo list",
     ]
+    examples = [
+        "add buy groceries to my todo list",
+        "show my tasks",
+        "complete buy groceries",
+        "put clean garage on my task list",
+    ]
     priority = 46
 
     _TODO_FILE = os.path.join(_data_dir(), "todo.json")
