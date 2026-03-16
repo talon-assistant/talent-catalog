@@ -438,8 +438,9 @@ class FileOrganizerTalent(BaseTalent):
 
     def _extract_path(self, command: str) -> str:
         """Try to extract a filesystem path from the command."""
+        # Match with optional preposition — handles both "in c:\users" and bare "c:\users"
         path_match = re.search(
-            r'(?:in|from|at|to)\s+([A-Za-z]:[/\\][^\s,]+|/[^\s,]+|~[/\\][^\s,]+)',
+            r'(?:(?:in|from|at|to)\s+)?([A-Za-z]:[/\\][^\s,]*|/[^\s,]+|~[/\\][^\s,]+)',
             command)
         if path_match:
             return os.path.expanduser(path_match.group(1))
