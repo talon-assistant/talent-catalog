@@ -84,8 +84,8 @@ class FileOrganizerTalent(BaseTalent):
         "executables": [".exe", ".msi", ".bat", ".sh", ".cmd"],
     }
 
-    def __init__(self, config: dict | None = None):
-        super().__init__(config)
+    def __init__(self):
+        super().__init__()
         # Pending organize confirmation state
         # { "directory": str, "plan": [(src, dst, category), ...], "expires": float }
         self._pending_organize: dict | None = None
