@@ -89,6 +89,9 @@ class FileOrganizerTalent(BaseTalent):
         # Pending organize confirmation state
         # { "directory": str, "plan": [(src, dst, category), ...], "expires": float }
         self._pending_organize: dict | None = None
+        # Pending search state — stored when we need a folder from the user
+        # { "intent": str, "file_type": str|None, "max_results": int|None, "expires": float }
+        self._pending_search: dict | None = None
 
     def get_config_schema(self) -> dict:
         return {
@@ -118,6 +121,14 @@ class FileOrganizerTalent(BaseTalent):
             else:
                 self._pending_organize = None   # expired — clear it
 
+        # Intercept follow-ups when we're waiting for a folder path or count
+        if self._pending_search is not None:
+            import time
+            if time.time() < self._pending_search["expires"]:
+                return True
+            else:
+                self._pending_search = None
+
         if any(ex in cmd for ex in self._EXCLUSIONS):
             return False
         return any(kw in cmd for kw in self.keywords)
@@ -143,6 +154,40 @@ class FileOrganizerTalent(BaseTalent):
                 self._pending_organize = None
                 return self._ok("Organize cancelled — no files were moved.")
 
+        # ── Handle pending search (follow-up providing folder or count) ──
+        if self._pending_search is not None:
+            import time
+            if time.time() >= self._pending_search["expires"]:
+                self._pending_search = None
+            else:
+                intent    = self._pending_search["intent"]
+                file_type = self._pending_search.get("file_type")
+                # Try to extract a count from the follow-up (e.g. "top 10", "20")
+                count_match = re.search(r'\b(\d+)\b', cmd)
+                if count_match:
+                    self._pending_search["max_results"] = int(count_match.group(1))
+                # Try to extract a path
+                directory = self._extract_path(command)
+                if not directory:
+                    directory = self._config.get("default_directory", "")
+                if directory:
+                    max_r = self._pending_search.get("max_results")
+                    self._pending_search = None
+                    if intent == "large_files":
+                        return self._find_large_files(directory, max_results=max_r)
+                    elif intent == "find_type" and file_type:
+                        return self._find_by_type(directory, file_type, max_results=max_r)
+                    elif intent == "list":
+                        return self._list_files(directory)
+                    elif intent == "organize":
+                        return self._preview_organize(directory)
+                # Still no path — update state and re-ask
+                if count_match:
+                    return self._fail(
+                        f"Got it — top {self._pending_search['max_results']}. "
+                        "Which folder should I search? Please include a path.")
+                return self._fail("Which folder should I search? Please include a path.")
+
         # ── Normal command dispatch ───────────────────────────────
 
         directory = self._extract_path(command)
@@ -151,6 +196,8 @@ class FileOrganizerTalent(BaseTalent):
         if any(p in cmd for p in ["organize", "sort by type", "sort files",
                                    "sort downloads", "clean up"]):
             if not directory:
+                self._pending_search = {"intent": "organize", "file_type": None,
+                                        "max_results": None, "expires": time.time() + 60}
                 return self._fail("Which folder should I organize? Please include a path.")
             return self._preview_organize(directory)
 
@@ -159,6 +206,8 @@ class FileOrganizerTalent(BaseTalent):
             if not directory:
                 directory = self._config.get("default_directory", "")
             if not directory:
+                self._pending_search = {"intent": "large_files", "file_type": None,
+                                        "max_results": None, "expires": time.time() + 60}
                 return self._fail("Which folder should I search? Please include a path.")
             return self._find_large_files(directory)
 
@@ -169,12 +218,16 @@ class FileOrganizerTalent(BaseTalent):
             if not directory:
                 directory = self._config.get("default_directory", "")
             if not directory:
+                self._pending_search = {"intent": "find_type", "file_type": file_type,
+                                        "max_results": None, "expires": time.time() + 60}
                 return self._fail("Which folder should I search? Please include a path.")
             return self._find_by_type(directory, file_type)
 
         # List files
         if any(p in cmd for p in ["list files", "show files", "what files", "what's in"]):
             if not directory:
+                self._pending_search = {"intent": "list", "file_type": None,
+                                        "max_results": None, "expires": time.time() + 60}
                 return self._fail("Which folder should I list? Please include a path.")
             return self._list_files(directory)
 
@@ -306,13 +359,13 @@ class FileOrganizerTalent(BaseTalent):
 
     # ── Find large files ──────────────────────────────────────────
 
-    def _find_large_files(self, directory: str) -> dict:
+    def _find_large_files(self, directory: str, max_results: int | None = None) -> dict:
         if not os.path.isdir(directory):
             return self._fail(f"Directory not found: {directory}")
 
         threshold_mb = self._config.get("large_file_mb", 100)
         threshold     = threshold_mb * 1024 * 1024
-        max_results   = self._config.get("max_results", 20)
+        max_results   = max_results or self._config.get("max_results", 20)
         large = []
 
         try:
@@ -343,11 +396,11 @@ class FileOrganizerTalent(BaseTalent):
 
     # ── Find by type ──────────────────────────────────────────────
 
-    def _find_by_type(self, directory: str, file_type: str) -> dict:
+    def _find_by_type(self, directory: str, file_type: str, max_results: int | None = None) -> dict:
         if not os.path.isdir(directory):
             return self._fail(f"Directory not found: {directory}")
 
-        max_results   = self._config.get("max_results", 20)
+        max_results   = max_results or self._config.get("max_results", 20)
         extensions    = set()
         file_type_lower = file_type.lower()
 
