@@ -44,8 +44,11 @@ class FileOrganizerTalent(BaseTalent):
     name = "file_organizer"
     description = "Search, move, and organize files on disk"
     keywords = [
-        "organize", "sort files", "find file", "find files", "large files",
-        "list files", "file organizer", "clean up", "sort downloads",
+        "organize", "sort files", "find file", "find files",
+        "large files", "large file", "largest files", "largest file",
+        "biggest files", "biggest file",
+        "list files", "show files", "what files",
+        "file organizer", "clean up", "sort downloads",
         "find pdf", "find images", "find documents",
     ]
     priority = 42
@@ -201,15 +204,17 @@ class FileOrganizerTalent(BaseTalent):
                 return self._fail("Which folder should I organize? Please include a path.")
             return self._preview_organize(directory)
 
-        # Find large files
-        if "large file" in cmd or "big file" in cmd:
+        # Find large files — matches "large file(s)", "largest file(s)", "biggest file(s)"
+        if re.search(r'\b(large(?:st)?|big(?:gest)?)\s+files?\b', cmd):
             if not directory:
                 directory = self._config.get("default_directory", "")
             if not directory:
                 self._pending_search = {"intent": "large_files", "file_type": None,
                                         "max_results": None, "expires": time.time() + 60}
                 return self._fail("Which folder should I search? Please include a path.")
-            return self._find_large_files(directory)
+            count_match = re.search(r'\b(\d+)\b', cmd)
+            max_r = int(count_match.group(1)) if count_match else None
+            return self._find_large_files(directory, max_results=max_r)
 
         # Find files by extension
         ext_match = re.search(r'find\s+(\w+)\s+files?', cmd)
