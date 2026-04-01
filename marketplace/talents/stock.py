@@ -13,15 +13,10 @@ Examples:
 import re
 from talents.base import BaseTalent
 
-try:
-    import yfinance as yf
-    _HAS_YFINANCE = True
-except ImportError:
-    _HAS_YFINANCE = False
-
 
 class StockTalent(BaseTalent):
     name = "stock"
+    subprocess_isolated = True
     description = "Look up stock prices, ticker info, and basic market data"
     keywords = [
         "stock", "stock price", "ticker", "shares", "market",
@@ -50,44 +45,120 @@ class StockTalent(BaseTalent):
             return False
         if any(kw in cmd for kw in self.keywords):
             return True
-        # Also match uppercase ticker patterns like "AAPL", "TSLA"
         if re.search(r'\b[A-Z]{1,5}\b', command) and ("price" in cmd or "how is" in cmd or "check" in cmd):
             return True
         return False
 
+    def _get_yf(self):
+        """Lazy-import yfinance to keep it out of the main process."""
+        import yfinance as yf
+        return yf
+
+    # Major indices — always included for general market queries
+    _INDICES = {
+        "^DJI":  "Dow Jones",
+        "^IXIC": "NASDAQ",
+        "^GSPC": "S&P 500",
+    }
+
+    _MARKET_PHRASES = [
+        "stock market", "the market", "how's the market",
+        "how is the market", "market today", "market check",
+        "check the market", "market update", "market summary",
+    ]
+
     def execute(self, command: str, context: dict) -> dict:
-        if not _HAS_YFINANCE:
+        try:
+            self._get_yf()
+        except ImportError:
             return self._fail("yfinance is not installed. Run: pip install yfinance")
 
         cmd = command.lower().strip()
+
+        # General market query → show major indices + watchlist
+        if any(phrase in cmd for phrase in self._MARKET_PHRASES) or cmd in ("check stock", "stocks"):
+            return self._market_overview()
+
         tickers = self._extract_tickers(command)
 
         if not tickers:
-            # Check watchlist
             watchlist = self._config.get("default_tickers", "")
             if watchlist:
                 tickers = [t.strip().upper() for t in watchlist.split(",") if t.strip()]
             if not tickers:
-                return self._fail(
-                    "Which stock? Include a ticker symbol like AAPL, TSLA, MSFT.")
+                # No specific ticker and no watchlist → show indices
+                return self._market_overview()
 
-        # Compare multiple
         if len(tickers) > 1:
             return self._compare_stocks(tickers)
 
-        # Single stock
         ticker = tickers[0]
 
-        # Detailed info requested
         if any(p in cmd for p in ["info", "detail", "about", "tell me about"]):
             return self._stock_info(ticker)
 
-        # Default: price
         return self._stock_price(ticker)
+
+    # ── Market Overview ──────────────────────────────────────────
+
+    def _market_overview(self):
+        yf = self._get_yf()
+        lines = ["Market Overview:\n"]
+
+        for symbol, name in self._INDICES.items():
+            try:
+                stock = yf.Ticker(symbol)
+                info = stock.info
+                price = info.get("regularMarketPrice") or info.get("currentPrice")
+                prev = info.get("regularMarketPreviousClose") or info.get("previousClose")
+
+                if price and prev:
+                    diff = price - prev
+                    pct = (diff / prev) * 100
+                    arrow = "\u2b06\ufe0f" if diff >= 0 else "\u2b07\ufe0f"
+                    sign = "+" if diff >= 0 else ""
+                    lines.append(
+                        f"  {name:<12} {price:>10,.2f}  "
+                        f"{arrow} {sign}{diff:,.2f} ({sign}{pct:.2f}%)")
+                elif price:
+                    lines.append(f"  {name:<12} {price:>10,.2f}")
+                else:
+                    lines.append(f"  {name:<12} {'N/A':>10}")
+            except Exception:
+                lines.append(f"  {name:<12} {'Error':>10}")
+
+        # Append watchlist tickers if configured
+        watchlist = self._config.get("default_tickers", "")
+        if watchlist:
+            extras = [t.strip().upper() for t in watchlist.split(",") if t.strip()]
+            if extras:
+                lines.append("")
+                for ticker in extras[:5]:
+                    try:
+                        stock = yf.Ticker(ticker)
+                        info = stock.info
+                        name = info.get("shortName", ticker)
+                        price = info.get("currentPrice") or info.get("regularMarketPrice")
+                        prev = info.get("previousClose") or info.get("regularMarketPreviousClose")
+                        if price and prev:
+                            diff = price - prev
+                            pct = (diff / prev) * 100
+                            arrow = "\u2b06\ufe0f" if diff >= 0 else "\u2b07\ufe0f"
+                            sign = "+" if diff >= 0 else ""
+                            lines.append(
+                                f"  {ticker:<8} ${price:>9,.2f}  "
+                                f"{arrow} {sign}{diff:,.2f} ({sign}{pct:.2f}%)")
+                        elif price:
+                            lines.append(f"  {ticker:<8} ${price:>9,.2f}")
+                    except Exception:
+                        lines.append(f"  {ticker:<8} {'Error':>10}")
+
+        return self._ok("\n".join(lines))
 
     # ── Price ────────────────────────────────────────────────────
 
     def _stock_price(self, ticker):
+        yf = self._get_yf()
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
@@ -143,6 +214,7 @@ class StockTalent(BaseTalent):
     # ── Info ─────────────────────────────────────────────────────
 
     def _stock_info(self, ticker):
+        yf = self._get_yf()
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
@@ -186,6 +258,7 @@ class StockTalent(BaseTalent):
     # ── Compare ──────────────────────────────────────────────────
 
     def _compare_stocks(self, tickers):
+        yf = self._get_yf()
         lines = ["Stock Comparison:\n"]
         lines.append(f"  {'Ticker':<8} {'Price':>10} {'Change':>10} {'Mkt Cap':>12}")
         lines.append("  " + "-" * 44)
@@ -224,10 +297,7 @@ class StockTalent(BaseTalent):
     # ── Helpers ──────────────────────────────────────────────────
 
     def _extract_tickers(self, command):
-        """Extract stock ticker symbols from the command."""
-        # Find uppercase 1-5 letter words that look like tickers
         candidates = re.findall(r'\b([A-Z]{1,5})\b', command)
-        # Filter out common words
         noise = {"I", "A", "AND", "OR", "THE", "FOR", "OF", "IN", "IS",
                  "IT", "TO", "MY", "HOW", "VS", "NYSE", "NASDAQ", "SP"}
         tickers = [t for t in candidates if t not in noise]
