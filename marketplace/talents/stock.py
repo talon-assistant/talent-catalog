@@ -16,7 +16,7 @@ from talents.base import BaseTalent
 
 class StockTalent(BaseTalent):
     name = "stock"
-#    subprocess_isolated = True
+    subprocess_isolated = True
     description = "Look up stock prices, ticker info, and basic market data"
     keywords = [
         "stock", "stock price", "ticker", "shares", "market",
